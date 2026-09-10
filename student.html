@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>المحقق العلمي</title>
+<style>
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#07182d}
+#app{position:fixed;inset:0;width:100%;height:100%;border:0;background:#07182d}
+</style>
+</head>
+<body>
+<iframe id="app" title="المحقق العلمي"></iframe>
+
+<script>
+(function(){
+  const DEFAULT_API='https://script.google.com/macros/s/AKfycbz6-iPHp20-ZWMhgZA6WsAnZM-WPoCgPgFMyjbAHwg6xvGPGZhMDluhqOZGd20I6InDuw/exec';
+  const q=new URLSearchParams(location.search);
+  const API_URL=(q.get('api')||DEFAULT_API).trim();
+  const frame=document.getElementById('app');
+
+  // نعرض نفس منصة الطالب الحالية بدون تغيير التصميم أو الأنشطة.
+  frame.src='index.html?api='+encodeURIComponent(API_URL)+'&guarded=1';
+
+  function checkParticipation(name,className){
+    return new Promise((resolve,reject)=>{
+      const cb='__scienceCheck_'+Date.now()+'_'+Math.random().toString(36).slice(2);
+      const s=document.createElement('script');
+      let finished=false;
+
+      function cleanup(){
+        if(finished)return;
+        finished=true;
+        clearTimeout(timer);
+        try{delete window[cb]}catch(e){window[cb]=undefined}
+        if(s.parentNode)s.parentNode.removeChild(s);
+      }
+
+      const timer=setTimeout(()=>{
+        cleanup();
+        reject(new Error('timeout'));
+      },12000);
+
+      window[cb]=(data)=>{
+        cleanup();
+        resolve(data);
+      };
+
+      s.onerror=()=>{
+        cleanup();
+        reject(new Error('network'));
+      };
+
+      s.src=API_URL+
+        (API_URL.includes('?')?'&':'?')+
+        'action=check'+
+        '&studentName='+encodeURIComponent(name)+
+        '&className='+encodeURIComponent(className)+
+        '&callback='+encodeURIComponent(cb)+
+        '&_='+Date.now();
+
+      document.head.appendChild(s);
+    });
+  }
+
+  function ensureValidCheck(data){
+    if(!data || data.ok!==true){
+      throw new Error((data && data.error) || 'check failed');
+    }
+    return data;
+  }
+
+  const DUP_MSG='سبق لك المشاركة في هذا النشاط. إذا أتاح لك المعلم إعادة المحاولة يمكنك الدخول مرة أخرى.';
+  const CHECK_ERR='تعذر التحقق من المشاركة الآن. تأكد من الاتصال بالإنترنت ثم حاول مرة أخرى.';
+
+  function setText(d,id,text){
+    const el=d.getElementById(id);
+    if(el)el.textContent=text;
+  }
+
+  frame.addEventListener('load',()=>{
+    let w,d;
+    try{
+      w=frame.contentWindow;
+      d=frame.contentDocument;
+      if(!d)return;
+    }catch(e){
+      return;
+    }
+
+    const startBtn=d.getElementById('startBtn');
+    const submitBtn=d.getElementById('submitBtn');
+
+    if(!startBtn || !submitBtn ||
+       typeof w.startActivity!=='function' ||
+       typeof w.submit!=='function'){
+      return;
+    }
+
+    const originalStart=w.startActivity.bind(w);
+    const originalSubmit=w.submit.bind(w);
+
+    let startBusy=false;
+    let submitBusy=false;
+    let currentName='';
+    let currentClass='';
+
+    // الفحص الأول: قبل دخول الطالب للنشاط.
+    startBtn.onclick=async function(){
+      if(startBusy)return;
+
+      const cl=(d.getElementById('className')?.value||'').trim();
+      const name=(d.getElementById('studentName')?.value||'').trim();
+
+      // نترك التحقق الأصلي يعرض رسالة اختيار الاسم/الفصل إن كانت البيانات ناقصة.
+      if(!cl || !name){
+        originalStart();
+        return;
+      }
+
+      startBusy=true;
+      startBtn.disabled=true;
+      setText(d,'startError','جاري التحقق من المشاركة...');
+
+      try{
+        const data=ensureValidCheck(await checkParticipation(name,cl));
+
+        if(data.submitted===true){
+          setText(d,'startError',DUP_MSG);
+          return;
+        }
+
+        currentName=name;
+        currentClass=cl;
+        setText(d,'startError','');
+        originalStart();
+      }catch(e){
+        setText(d,'startError',CHECK_ERR);
+      }finally{
+        startBusy=false;
+        startBtn.disabled=false;
+      }
+    };
+
+    // الفحص الثاني: قبل إرسال النتيجة مباشرة.
+    submitBtn.onclick=async function(){
+      if(submitBusy)return;
+
+      // إذا كانت هناك إجابات ناقصة، نترك المنصة الأصلية تعرض رسالتها المعتادة.
+      try{
+        if(typeof w.totalRequired==='function' &&
+           typeof w.answeredRequired==='function' &&
+           w.totalRequired()-w.answeredRequired()>0){
+          originalSubmit();
+          return;
+        }
+      }catch(e){}
+
+      if(!currentName || !currentClass){
+        setText(d,'submitError',CHECK_ERR);
+        return;
+      }
+
+      submitBusy=true;
+      submitBtn.disabled=true;
+      setText(d,'submitError','جاري التحقق قبل إرسال النتيجة...');
+
+      try{
+        const data=ensureValidCheck(await checkParticipation(currentName,currentClass));
+
+        if(data.submitted===true){
+          setText(d,'submitError',DUP_MSG);
+          return;
+        }
+
+        setText(d,'submitError','');
+        originalSubmit();
+      }catch(e){
+        setText(d,'submitError',CHECK_ERR);
+      }finally{
+        submitBusy=false;
+        submitBtn.disabled=false;
+      }
+    };
+  });
+})();
+</script>
+</body>
+</html>
